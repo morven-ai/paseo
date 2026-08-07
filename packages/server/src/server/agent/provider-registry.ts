@@ -70,6 +70,7 @@ export { AGENT_PROVIDER_DEFINITIONS, getAgentProviderDefinition };
 
 export interface ProviderDefinition extends AgentProviderDefinition {
   enabled: boolean;
+  readonly providerParams?: Readonly<Record<string, unknown>>;
   /**
    * The id of another *registered* provider this one extends (e.g. a Z.AI
    * profile that extends "claude"). null for built-in providers and for
@@ -114,7 +115,7 @@ interface ProviderClientFactoryOptions extends Pick<
   BuildProviderRegistryOptions,
   "workspaceGitService" | "managedProcesses" | "ompRuntime"
 > {
-  providerParams?: unknown;
+  providerParams?: ProviderOverride["params"];
   customProvider?: {
     id: string;
     label: string;
@@ -136,7 +137,7 @@ interface ResolvedProvider {
   profileModelsAreAdditive: boolean;
   enabled: boolean;
   derivedFromProviderId: string | null;
-  providerParams?: unknown;
+  providerParams?: ProviderOverride["params"];
   createBaseClient: (logger: Logger) => AgentClient;
   contract: ProviderContract;
 }
@@ -188,10 +189,11 @@ const HUB_E2E_PROVIDER_CONTRACT: ProviderContract = {
 };
 
 const PROVIDER_CLIENT_FACTORIES: Record<string, ProviderClientFactory> = {
-  claude: (logger, runtimeSettings) =>
+  claude: (logger, runtimeSettings, options) =>
     new ClaudeAgentClient({
       logger,
       runtimeSettings,
+      providerParams: options?.providerParams,
     }),
   codex: (logger, runtimeSettings, options) =>
     new CodexAppServerAgentClient(logger, runtimeSettings, {
@@ -607,6 +609,7 @@ function createRegistryEntry(
     ...resolved.definition,
     enabled: resolved.enabled,
     derivedFromProviderId: resolved.derivedFromProviderId,
+    providerParams: resolved.providerParams,
     optionsSchema: resolved.contract.optionsSchema,
     supportsExactMcpPreapproval: resolved.contract.supportsExactMcpPreapproval,
     validateOptions: (options) =>

@@ -226,6 +226,40 @@ describe("ProviderSnapshotManager public surface", () => {
     }
   });
 
+  test("getProviderParams reads the current registry after mutable config reload", () => {
+    const initialParams = { usage: { quotaProvider: "codex" } };
+    const reloadedParams = {
+      usage: { contextSource: "assistant-message", showCost: false, quotaProvider: "codex" },
+    };
+    const manager = new ProviderSnapshotManager({
+      logger: createTestLogger(),
+      providerOverrides: {
+        "cx-claude": {
+          extends: "claude",
+          label: "CX Claude",
+          enabled: true,
+          params: initialParams,
+        },
+      },
+    });
+    try {
+      expect(manager.getProviderParams("cx-claude")).toEqual(initialParams);
+
+      manager.applyMutableProviderConfig({
+        "cx-claude": {
+          extends: "claude",
+          label: "CX Claude",
+          enabled: true,
+          params: reloadedParams,
+        },
+      });
+
+      expect(manager.getProviderParams("cx-claude")).toEqual(reloadedParams);
+    } finally {
+      manager.destroy();
+    }
+  });
+
   test("getSnapshot returns loading entries for built-in providers before warmup", () => {
     const manager = new ProviderSnapshotManager({ logger: createTestLogger() });
     try {

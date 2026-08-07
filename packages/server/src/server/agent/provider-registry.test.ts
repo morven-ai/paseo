@@ -96,11 +96,15 @@ vi.mock("./providers/claude/agent.js", async () => {
       readonly provider = "claude";
       readonly runtimeSettings?: unknown;
 
-      constructor(options: { runtimeSettings?: unknown }) {
+      constructor(options: { runtimeSettings?: unknown; providerParams?: unknown }) {
         this.runtimeSettings = options.runtimeSettings;
-        mockState.constructorArgs.claude.push({
+        const entry: ConstructorEntry = {
           runtimeSettings: options.runtimeSettings,
-        });
+        };
+        if (options.providerParams !== undefined) {
+          entry.providerParams = options.providerParams;
+        }
+        mockState.constructorArgs.claude.push(entry);
       }
 
       async createSession(): Promise<never> {
@@ -599,6 +603,25 @@ test("built-in override applies env", () => {
       },
     },
   });
+});
+
+test("Claude factory passes provider params to ClaudeAgentClient", () => {
+  const providerParams = {
+    usage: {
+      contextSource: "assistant-message",
+      showCost: false,
+      quotaProvider: "codex",
+    },
+  };
+
+  const registry = buildProviderRegistry(logger, {
+    providerOverrides: {
+      claude: { params: providerParams },
+    },
+  });
+
+  expect(registry.claude.providerParams).toBe(providerParams);
+  expect(mockState.constructorArgs.claude[0]?.providerParams).toBe(providerParams);
 });
 
 test("OMP is a disabled built-in backed by the real OMP adapter", async () => {
