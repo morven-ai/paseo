@@ -20,6 +20,8 @@ import {
 } from "../../agent/agent-sdk-types.js";
 import type { ProviderAvailability } from "../../agent/agent-manager.js";
 import type { ProviderUsageService } from "../../../services/quota-fetcher/service.js";
+import type { ProviderUsage } from "../../messages.js";
+import { parseProviderUsageParams } from "../../agent/provider-usage-params.js";
 import { expandTilde } from "../../../utils/path.js";
 
 // COMPAT(customModeIcons): the only mode icons known to clients before v0.1.84. Any
@@ -485,12 +487,13 @@ export class ProviderCatalogSession {
   ): Promise<void> {
     try {
       const usage = await this.providerUsageService.listUsage();
+      const providers = this.projectConfiguredProviderUsage(usage.providers);
       this.host.emit({
         type: "provider.usage.list.response",
         payload: {
           requestId: msg.requestId,
           fetchedAt: usage.fetchedAt,
-          providers: usage.providers,
+          providers,
         },
       });
     } catch (error) {
@@ -506,6 +509,36 @@ export class ProviderCatalogSession {
         },
       });
     }
+  }
+
+  private projectConfiguredProviderUsage(providers: ProviderUsage[]): ProviderUsage[] {
+    const projected: ProviderUsage[] = [];
+    for (const providerId of this.providerSnapshotManager.listRegisteredProviderIds()) {
+      const { quotaProvider } = parseProviderUsageParams(
+        this.providerSnapshotManager.getProviderParams(providerId),
+      );
+      if (!quotaProvider || providerId === quotaProvider) {
+        continue;
+      }
+      const source = providers.find((provider) => provider.providerId === quotaProvider);
+      if (!source || providers.some((provider) => provider.providerId === providerId)) {
+        continue;
+      }
+      projected.push({
+        providerId,
+        displayName: this.providerSnapshotManager.getProviderLabel(providerId),
+        status: source.status,
+        planLabel: source.planLabel,
+        sourceLabel: "Codex quota",
+        fetchedAt: source.fetchedAt,
+        nextRefreshAt: source.nextRefreshAt,
+        windows: source.windows.filter(
+          (window) => window.id === "session" || window.id === "weekly",
+        ),
+        error: source.error,
+      });
+    }
+    return [...providers, ...projected];
   }
 }
 

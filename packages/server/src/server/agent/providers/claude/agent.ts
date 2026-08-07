@@ -134,6 +134,7 @@ import {
   type ProviderRuntimeSettings,
   type ResolvedProviderLaunch,
 } from "../../provider-launch-config.js";
+import { parseProviderUsageParams, type ProviderUsageParams } from "../../provider-usage-params.js";
 import { withTimeout } from "../../../../utils/promise-timeout.js";
 import { terminateWithTreeKill } from "../../../../utils/tree-kill.js";
 import { execCommand } from "../../../../utils/spawn.js";
@@ -396,6 +397,7 @@ interface ClaudeAgentClientOptions {
   resolveBinary?: () => Promise<string>;
   resolveVersion?: (signal?: AbortSignal) => Promise<string>;
   configDir?: string;
+  providerParams?: unknown;
 }
 
 interface ClaudeAgentSessionOptions {
@@ -408,6 +410,7 @@ interface ClaudeAgentSessionOptions {
   logger: Logger;
   queryFactory?: ClaudeQueryFactory;
   resolveBinary: () => Promise<string>;
+  usageParams: ProviderUsageParams;
 }
 
 type ClaudeThinkingEffort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -1480,6 +1483,7 @@ export class ClaudeAgentClient implements AgentClient {
   private readonly resolveBinary: () => Promise<string>;
   private readonly resolveVersion: (signal?: AbortSignal) => Promise<string>;
   private readonly configDir?: string;
+  private readonly usageParams: ProviderUsageParams;
 
   constructor(options: ClaudeAgentClientOptions) {
     this.defaults = options.defaults;
@@ -1491,6 +1495,7 @@ export class ClaudeAgentClient implements AgentClient {
       options.resolveVersion ??
       ((signal) => resolveClaudeCodeVersion(this.runtimeSettings, signal));
     this.configDir = options.configDir;
+    this.usageParams = parseProviderUsageParams(options.providerParams);
   }
 
   resolveConfiguredModel(model: AgentModelDefinition): AgentModelDefinition {
@@ -1512,6 +1517,7 @@ export class ClaudeAgentClient implements AgentClient {
       logger: this.logger,
       queryFactory: this.queryFactory,
       resolveBinary: this.resolveBinary,
+      usageParams: this.usageParams,
     });
   }
 
@@ -1540,6 +1546,7 @@ export class ClaudeAgentClient implements AgentClient {
       logger: this.logger,
       queryFactory: this.queryFactory,
       resolveBinary: this.resolveBinary,
+      usageParams: this.usageParams,
     });
   }
 
@@ -1798,6 +1805,30 @@ function readStreamRequestInputTokens(event: Record<string, unknown>): number | 
   return inputTokens + cacheCreationInputTokens + cacheReadInputTokens;
 }
 
+function readStreamRequestDeltaInputTokens(event: Record<string, unknown>): number | undefined {
+  const usage = toObjectRecord(event.usage);
+  if (!usage) {
+    return undefined;
+  }
+  const inputTokens = usage.input_tokens;
+  const cacheCreationInputTokens = usage.cache_creation_input_tokens ?? 0;
+  const cacheReadInputTokens = usage.cache_read_input_tokens ?? 0;
+  if (
+    typeof inputTokens !== "number" ||
+    !Number.isFinite(inputTokens) ||
+    inputTokens < 0 ||
+    typeof cacheCreationInputTokens !== "number" ||
+    !Number.isFinite(cacheCreationInputTokens) ||
+    cacheCreationInputTokens < 0 ||
+    typeof cacheReadInputTokens !== "number" ||
+    !Number.isFinite(cacheReadInputTokens) ||
+    cacheReadInputTokens < 0
+  ) {
+    return undefined;
+  }
+  return inputTokens + cacheCreationInputTokens + cacheReadInputTokens;
+}
+
 function readStreamRequestOutputTokens(event: Record<string, unknown>): number | undefined {
   const outputTokens = toObjectRecord(event.usage)?.output_tokens;
   if (typeof outputTokens !== "number" || !Number.isFinite(outputTokens) || outputTokens < 0) {
@@ -1821,27 +1852,32 @@ function readLastUsageIteration(usage: unknown): Record<string, unknown> | undef
 }
 
 function readUsageTokenTotal(usage: Record<string, unknown>): number | undefined {
-  const usageWithCacheCreation = usage as typeof usage & {
-    cache_creation_input_tokens?: unknown;
-  };
-  const inputTokens =
-    typeof usage.input_tokens === "number" && Number.isFinite(usage.input_tokens)
-      ? usage.input_tokens
-      : 0;
-  const cacheCreationInputTokens =
-    typeof usageWithCacheCreation.cache_creation_input_tokens === "number" &&
-    Number.isFinite(usageWithCacheCreation.cache_creation_input_tokens)
-      ? usageWithCacheCreation.cache_creation_input_tokens
-      : 0;
-  const cacheReadInputTokens =
-    typeof usage.cache_read_input_tokens === "number" &&
-    Number.isFinite(usage.cache_read_input_tokens)
-      ? usage.cache_read_input_tokens
-      : 0;
-  const outputTokens =
-    typeof usage.output_tokens === "number" && Number.isFinite(usage.output_tokens)
-      ? usage.output_tokens
-      : 0;
+  const inputTokens = usage.input_tokens;
+  const outputTokens = usage.output_tokens;
+  if (
+    typeof inputTokens !== "number" ||
+    !Number.isFinite(inputTokens) ||
+    inputTokens < 0 ||
+    typeof outputTokens !== "number" ||
+    !Number.isFinite(outputTokens) ||
+    outputTokens < 0
+  ) {
+    return undefined;
+  }
+
+  const cacheCreationInputTokens = usage.cache_creation_input_tokens ?? 0;
+  const cacheReadInputTokens = usage.cache_read_input_tokens ?? 0;
+  if (
+    typeof cacheCreationInputTokens !== "number" ||
+    !Number.isFinite(cacheCreationInputTokens) ||
+    cacheCreationInputTokens < 0 ||
+    typeof cacheReadInputTokens !== "number" ||
+    !Number.isFinite(cacheReadInputTokens) ||
+    cacheReadInputTokens < 0
+  ) {
+    return undefined;
+  }
+
   const total = inputTokens + cacheCreationInputTokens + cacheReadInputTokens + outputTokens;
   return total > 0 ? total : undefined;
 }
@@ -1873,9 +1909,14 @@ class ClaudeContextUsageState {
   private streamRequestInputTokens: number | undefined;
   private streamRequestOutputTokens: number | undefined;
   private compactedContextWindowUsedTokens: number | undefined;
+  private assistantMessageUsedTokens: number | undefined;
+  private assistantMessageUsageRecordedThisTurn = false;
   private completedResultTurns = 0;
 
-  constructor(initialContextWindowMaxTokens?: number) {
+  constructor(
+    initialContextWindowMaxTokens: number | undefined,
+    private readonly usageParams: ProviderUsageParams,
+  ) {
     this.contextWindowMaxTokens = initialContextWindowMaxTokens;
   }
 
@@ -1883,6 +1924,7 @@ class ClaudeContextUsageState {
     this.streamRequestInputTokens = undefined;
     this.streamRequestOutputTokens = undefined;
     this.compactedContextWindowUsedTokens = undefined;
+    this.assistantMessageUsageRecordedThisTurn = false;
   }
 
   setInitialContextWindowMaxTokens(contextWindowMaxTokens: number | undefined): void {
@@ -1898,6 +1940,7 @@ class ClaudeContextUsageState {
   }
 
   buildStreamUsageEvent(event: unknown): AgentStreamEvent | null {
+    const suppressEvent = this.usageParams.contextSource === "assistant-message";
     const streamEvent = toObjectRecord(event);
     if (!streamEvent) {
       return null;
@@ -1911,17 +1954,23 @@ class ClaudeContextUsageState {
       this.streamRequestInputTokens = inputTokens;
       this.streamRequestOutputTokens = 0;
     } else if (eventType === "message_delta") {
+      const inputTokens = readStreamRequestDeltaInputTokens(streamEvent);
       const outputTokens = readStreamRequestOutputTokens(streamEvent);
-      if (typeof outputTokens !== "number") {
+      if (inputTokens === undefined && outputTokens === undefined) {
         return null;
       }
-      this.streamRequestOutputTokens = outputTokens;
+      if (inputTokens !== undefined) {
+        this.streamRequestInputTokens = inputTokens;
+      }
+      if (outputTokens !== undefined) {
+        this.streamRequestOutputTokens = outputTokens;
+      }
     } else {
       return null;
     }
 
     const usedTokens = this.streamUsedTokens();
-    if (usedTokens === undefined) {
+    if (usedTokens === undefined || suppressEvent) {
       return null;
     }
     return this.createUsageUpdatedEvent(usedTokens);
@@ -1936,7 +1985,7 @@ class ClaudeContextUsageState {
         inputTokens: message.usage.input_tokens,
         cachedInputTokens: message.usage.cache_read_input_tokens,
         outputTokens: message.usage.output_tokens,
-        totalCostUsd: message.total_cost_usd,
+        ...(this.usageParams.showCost === false ? {} : { totalCostUsd: message.total_cost_usd }),
       };
 
       const modelContextWindowMaxTokens = this.recordModelUsage(modelUsage ?? message.modelUsage);
@@ -1950,7 +1999,18 @@ class ClaudeContextUsageState {
         readActiveUsageTokens(message.usage) ??
         (this.completedResultTurns === 0 ? readLegacyResultUsageTokens(message.usage) : undefined);
       const usedTokens =
-        this.streamUsedTokens() ?? activeResultUsageTokens ?? this.compactedContextWindowUsedTokens;
+        this.usageParams.contextSource === "assistant-message"
+          ? ((this.assistantMessageUsageRecordedThisTurn
+              ? this.assistantMessageUsedTokens
+              : undefined) ??
+            this.streamUsedTokens() ??
+            this.compactedContextWindowUsedTokens ??
+            this.assistantMessageUsedTokens ??
+            activeResultUsageTokens ??
+            readLegacyResultUsageTokens(message.usage))
+          : (this.streamUsedTokens() ??
+            activeResultUsageTokens ??
+            this.compactedContextWindowUsedTokens);
       if (usedTokens !== undefined) {
         usage.contextWindowUsedTokens = usedTokens;
       }
@@ -1959,6 +2019,22 @@ class ClaudeContextUsageState {
       this.compactedContextWindowUsedTokens = undefined;
       this.completedResultTurns += 1;
     }
+  }
+
+  recordAssistantMessageUsage(usage: unknown): void {
+    if (this.usageParams.contextSource !== "assistant-message") {
+      return;
+    }
+    const usageRecord = toObjectRecord(usage);
+    const usedTokens = usageRecord ? readUsageTokenTotal(usageRecord) : undefined;
+    if (usedTokens !== undefined) {
+      this.assistantMessageUsedTokens = usedTokens;
+      this.assistantMessageUsageRecordedThisTurn = true;
+    }
+  }
+
+  shouldReplaceResultUsageSnapshot(): boolean {
+    return this.usageParams.showCost === false;
   }
 
   private streamUsedTokens(): number | undefined {
@@ -2087,6 +2163,7 @@ class ClaudeAgentSession implements AgentSession {
     this.resolveBinary = options.resolveBinary;
     this.contextUsage = new ClaudeContextUsageState(
       findClaudeModel(this.config.model)?.contextWindowMaxTokens,
+      options.usageParams,
     );
     const handle = options.handle;
 
@@ -3884,6 +3961,7 @@ class ClaudeAgentSession implements AgentSession {
         this.appendSidechainResultEvents(message, events);
         break;
       case "assistant": {
+        this.contextUsage.recordAssistantMessageUsage(message.message.usage);
         const timelineItems = this.mapBlocksToTimeline(message.message.content, {
           suppressAssistantText: options?.suppressAssistantText ?? false,
           suppressReasoning: options?.suppressReasoning ?? false,
@@ -4210,6 +4288,9 @@ class ClaudeAgentSession implements AgentSession {
             messageId: message.uuid,
           },
         });
+      }
+      if (usage && this.contextUsage.shouldReplaceResultUsageSnapshot()) {
+        events.push({ type: "usage_updated", provider: "claude", usage });
       }
       events.push({ type: "turn_completed", provider: "claude", usage });
       return;

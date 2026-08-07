@@ -287,6 +287,10 @@ export class ProviderSnapshotManager {
     return this.providerRegistry[provider]?.label ?? provider;
   }
 
+  getProviderParams(provider: AgentProvider): Readonly<Record<string, unknown>> | undefined {
+    return this.providerRegistry[provider]?.providerParams;
+  }
+
   getAgentManagerProviderState(): AgentManagerProviderState {
     const providerDefinitions: AgentManagerProviderState["providerDefinitions"] = {};
     const clients: AgentManagerProviderState["clients"] = {};

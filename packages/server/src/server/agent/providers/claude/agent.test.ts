@@ -17,7 +17,12 @@ import {
 } from "./agent.js";
 import { claudeProjectDirSync } from "./project-dir.js";
 import { streamSession } from "../test-utils/session-stream-adapter.js";
-import type { AgentSession, AgentTimelineItem, AgentStreamEvent } from "../../agent-sdk-types.js";
+import type {
+  AgentSession,
+  AgentTimelineItem,
+  AgentStreamEvent,
+  AgentUsage,
+} from "../../agent-sdk-types.js";
 
 interface TestClaudeSession {
   translateMessageToEvents(message: SDKMessage): AgentStreamEvent[];
@@ -1362,6 +1367,7 @@ describe("ClaudeAgentSession context window usage", () => {
   interface QueryFactoryForTurnsOptions {
     getContextUsage?: ReturnType<typeof vi.fn>;
     model?: string;
+    providerParams?: unknown;
   }
 
   async function createSessionForTest(): Promise<TestClaudeSession> {
@@ -1381,6 +1387,7 @@ describe("ClaudeAgentSession context window usage", () => {
       logger,
       queryFactory: createQueryFactoryForTurns(turns, options),
       resolveBinary: async () => "/test/claude/bin",
+      providerParams: options?.providerParams,
     });
     return await client.createSession({
       provider: "claude",
@@ -1615,6 +1622,24 @@ describe("ClaudeAgentSession context window usage", () => {
         output_tokens: 876,
       },
       session_id: "session-1",
+    };
+  }
+
+  function createAssistantMessage(
+    usage: Record<string, unknown>,
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
+      type: "assistant",
+      parent_tool_use_id: null,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Parent response" }],
+        usage,
+      },
+      uuid: "assistant-1",
+      session_id: "session-1",
+      ...overrides,
     };
   }
 
@@ -1963,6 +1988,277 @@ describe("ClaudeAgentSession context window usage", () => {
     } finally {
       await session.close();
     }
+  });
+
+  test("assistant-message usage excludes subagents, suppresses stream usage, and replaces stale cost", async () => {
+    const getContextUsage = vi.fn(async () => {
+      throw new Error("getContextUsage must not be called");
+    });
+    const session = await createSessionForTurns(
+      [
+        [
+          createInitMessage(),
+          createMessageStartEvent({
+            input_tokens: 1,
+            cache_creation_input_tokens: 2,
+            cache_read_input_tokens: 3,
+          }),
+          createMessageDeltaEvent(4),
+          createAgentToolStartEvent(),
+          createAssistantMessage(
+            {
+              input_tokens: 9_000,
+              cache_creation_input_tokens: 8_000,
+              cache_read_input_tokens: 7_000,
+              output_tokens: 6_000,
+            },
+            {
+              parent_tool_use_id: "toolu-agent-1",
+              uuid: "subagent-assistant-1",
+            },
+          ),
+          createAssistantMessage({
+            input_tokens: 2,
+            cache_creation_input_tokens: 30,
+            cache_read_input_tokens: 100,
+            output_tokens: 5,
+          }),
+          createSuccessResult({
+            usage: {
+              input_tokens: 5_000,
+              cache_creation_input_tokens: 500,
+              cache_read_input_tokens: 600,
+              output_tokens: 700,
+            },
+          }),
+        ],
+      ],
+      {
+        getContextUsage,
+        providerParams: {
+          usage: {
+            contextSource: "assistant-message",
+            showCost: false,
+            quotaProvider: "codex",
+          },
+        },
+      },
+    );
+
+    try {
+      const events = await collectStreamEvents(session);
+      const usageEvents = events.filter((event) => event.type === "usage_updated");
+      const completedIndex = events.findIndex((event) => event.type === "turn_completed");
+      const usageIndex = events.findIndex((event) => event.type === "usage_updated");
+      const expectedUsage = {
+        inputTokens: 5_000,
+        cachedInputTokens: 600,
+        outputTokens: 700,
+        contextWindowMaxTokens: 200_000,
+        contextWindowUsedTokens: 137,
+      };
+
+      expect(getContextUsage).not.toHaveBeenCalled();
+      expect(usageEvents).toEqual([
+        expect.objectContaining({
+          type: "usage_updated",
+          provider: "claude",
+          usage: expectedUsage,
+        }),
+      ]);
+      expect(usageIndex).toBeGreaterThanOrEqual(0);
+      expect(usageIndex).toBeLessThan(completedIndex);
+      expect(events[completedIndex]).toEqual(
+        expect.objectContaining({
+          type: "turn_completed",
+          provider: "claude",
+          usage: expectedUsage,
+        }),
+      );
+
+      let lastUsage: AgentUsage = {
+        totalCostUsd: 9,
+      };
+      for (const event of events) {
+        if (event.type === "usage_updated") {
+          lastUsage = event.usage;
+        } else if (event.type === "turn_completed" && event.usage) {
+          lastUsage = { ...lastUsage, ...event.usage };
+        }
+      }
+      expect(lastUsage).toEqual(expectedUsage);
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("uses parent message delta usage when the assistant snapshot is zero", async () => {
+    const session = await createSessionForTurns(
+      [
+        [
+          createMessageStartEvent({
+            input_tokens: 0,
+            output_tokens: 0,
+          }),
+          {
+            type: "stream_event",
+            event: {
+              type: "message_delta",
+              usage: {
+                input_tokens: 489,
+                cache_read_input_tokens: 34_304,
+                output_tokens: 9,
+              },
+            },
+            session_id: "session-1",
+          },
+          createAssistantMessage({
+            input_tokens: 0,
+            output_tokens: 0,
+          }),
+          createSuccessResult(),
+        ],
+      ],
+      {
+        providerParams: {
+          usage: {
+            contextSource: "assistant-message",
+            showCost: false,
+          },
+        },
+      },
+    );
+
+    try {
+      const events = await collectStreamEvents(session);
+      const usageEvents = events.filter((event) => event.type === "usage_updated");
+
+      expect(usageEvents).toEqual([
+        expect.objectContaining({
+          type: "usage_updated",
+          provider: "claude",
+          usage: expect.objectContaining({
+            contextWindowUsedTokens: 34_802,
+          }),
+        }),
+      ]);
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("retains the last valid assistant usage when a later snapshot is malformed", async () => {
+    const session = await createSessionForTurns(
+      [
+        [
+          createAssistantMessage({
+            input_tokens: 2,
+            cache_creation_input_tokens: 30,
+            cache_read_input_tokens: 100,
+            output_tokens: 5,
+          }),
+          createAssistantMessage({
+            input_tokens: 999,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          }),
+          createSuccessResult(),
+        ],
+      ],
+      {
+        providerParams: {
+          usage: {
+            contextSource: "assistant-message",
+            showCost: false,
+          },
+        },
+      },
+    );
+
+    try {
+      const result = await session.run("turn");
+
+      expect(result.usage).toEqual({
+        inputTokens: 10,
+        cachedInputTokens: 5,
+        outputTokens: 7,
+        contextWindowMaxTokens: 200_000,
+        contextWindowUsedTokens: 137,
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("retains the last valid assistant usage across turns without a new snapshot", async () => {
+    const session = await createSessionForTurns(
+      [
+        [
+          createAssistantMessage({
+            input_tokens: 2,
+            cache_creation_input_tokens: 30,
+            cache_read_input_tokens: 100,
+            output_tokens: 5,
+          }),
+          createSuccessResult(),
+        ],
+        [createSuccessResult()],
+      ],
+      {
+        providerParams: {
+          usage: {
+            contextSource: "assistant-message",
+            showCost: false,
+          },
+        },
+      },
+    );
+
+    try {
+      await session.run("first turn");
+      const result = await session.run("second turn");
+
+      expect(result.usage).toEqual({
+        inputTokens: 10,
+        cachedInputTokens: 5,
+        outputTokens: 7,
+        contextWindowMaxTokens: 200_000,
+        contextWindowUsedTokens: 137,
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("rejects unsupported quota providers", () => {
+    expect(
+      () =>
+        new ClaudeAgentClient({
+          logger,
+          resolveBinary: async () => "/test/claude/bin",
+          providerParams: {
+            usage: {
+              quotaProvider: "codex-alias",
+            },
+          },
+        }),
+    ).toThrow();
+  });
+
+  test("rejects unknown provider usage params", () => {
+    expect(
+      () =>
+        new ClaudeAgentClient({
+          logger,
+          resolveBinary: async () => "/test/claude/bin",
+          providerParams: {
+            usage: {
+              contextSource: "assistant-message",
+              unexpected: true,
+            },
+          },
+        }),
+    ).toThrow();
   });
 
   test("does not report task notification tokens as parent context usage", async () => {

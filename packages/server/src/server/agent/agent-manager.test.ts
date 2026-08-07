@@ -5098,7 +5098,7 @@ test("replaceAgentRun stays running when a stale old terminal arrives before the
   unsubscribe();
 });
 
-test("applies live autonomous events and preserves usage omitted from completion", async () => {
+test("applies live autonomous events and replaces stale usage when completion omits usage", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-live-events-"));
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
@@ -5164,6 +5164,14 @@ test("applies live autonomous events and preserves usage omitted from completion
       turnId: autonomousTurnId,
       startedAt: expect.any(String),
     });
+  });
+  capturedSession!.pushEvent({
+    type: "usage_updated",
+    provider: "codex",
+    usage: {
+      totalCostUsd: 9,
+    },
+    turnId: autonomousTurnId,
   });
   capturedSession!.pushEvent({
     type: "usage_updated",

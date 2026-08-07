@@ -6,7 +6,7 @@ import {
 } from "./provider-catalog-session.js";
 import { createStub } from "../../test-utils/class-mocks.js";
 import { findByType } from "../../test-utils/session-stubs.js";
-import type { SessionOutboundMessage } from "../../messages.js";
+import type { ProviderUsage, SessionOutboundMessage } from "../../messages.js";
 import {
   GLOBAL_PROVIDER_SNAPSHOT_KEY,
   type ProviderSnapshotManager,
@@ -41,6 +41,24 @@ function makeEntries(): ProviderSnapshotEntry[] {
     },
     { provider: "claude", status: "ready", enabled: true, modes: [] },
   ];
+}
+
+function makeCodexUsage(overrides: Partial<ProviderUsage> = {}): ProviderUsage {
+  return {
+    providerId: "codex",
+    displayName: "Codex",
+    status: "available",
+    planLabel: "pro",
+    windows: [
+      { id: "session", label: "Session", usedPct: 20 },
+      { id: "weekly", label: "Weekly", usedPct: 30 },
+      { id: "code_review", label: "Code review", usedPct: 40 },
+    ],
+    balances: [{ id: "credits", label: "Credits", remaining: 10, unit: "usd" }],
+    details: [{ id: "account", label: "Account", value: "dev@example.com" }],
+    error: null,
+    ...overrides,
+  };
 }
 
 function makeSubsystem(options: MakeOptions = {}) {
@@ -303,6 +321,150 @@ describe("ProviderCatalogSession", () => {
     const err = findByType(emitted, "rpc_error");
     expect(err?.payload.code).toBe("provider_usage_list_failed");
     expect(err?.payload.requestId).toBe("u1");
+  });
+
+  it("projects configured quota usage once with only session and weekly windows", async () => {
+    const codexUsage = makeCodexUsage({ displayName: "Codex Pro" });
+    const listUsage = vi.fn(async () => ({
+      fetchedAt: "2026-08-07T00:00:00.000Z",
+      providers: [codexUsage],
+    }));
+    const { subsystem, emitted } = makeSubsystem({
+      snapshot: {
+        listRegisteredProviderIds: () => ["codex", "cx"],
+        getProviderParams: (provider: string) =>
+          provider === "cx" ? { usage: { quotaProvider: "codex" } } : undefined,
+        getProviderLabel: (provider: string) => (provider === "cx" ? "Claude CX" : "Codex"),
+      },
+      usage: { listUsage },
+    });
+
+    await subsystem.handleProviderUsageListRequest({
+      type: "provider.usage.list.request",
+      requestId: "u-projection",
+    });
+
+    expect(listUsage).toHaveBeenCalledTimes(1);
+    const response = findByType(emitted, "provider.usage.list.response");
+    expect(response?.payload.providers[0]).toBe(codexUsage);
+    expect(response?.payload.providers[1]).toEqual({
+      providerId: "cx",
+      displayName: "Claude CX",
+      status: "available",
+      planLabel: "pro",
+      sourceLabel: "Codex quota",
+      fetchedAt: undefined,
+      nextRefreshAt: undefined,
+      windows: [
+        { id: "session", label: "Session", usedPct: 20 },
+        { id: "weekly", label: "Weekly", usedPct: 30 },
+      ],
+      error: null,
+    });
+    expect(response?.payload.providers[1]).not.toHaveProperty("balances");
+    expect(response?.payload.providers[1]).not.toHaveProperty("details");
+  });
+
+  it("projects the exact quota provider error under the custom provider", async () => {
+    const { subsystem, emitted } = makeSubsystem({
+      snapshot: {
+        listRegisteredProviderIds: () => ["cx"],
+        getProviderParams: () => ({ usage: { quotaProvider: "codex" } }),
+        getProviderLabel: () => "Claude CX",
+      },
+      usage: {
+        listUsage: async () => ({
+          fetchedAt: "2026-08-07T00:00:00.000Z",
+          providers: [
+            makeCodexUsage({ status: "error", windows: [], error: "Codex quota failed" }),
+          ],
+        }),
+      },
+    });
+
+    await subsystem.handleProviderUsageListRequest({
+      type: "provider.usage.list.request",
+      requestId: "u-error",
+    });
+
+    const response = findByType(emitted, "provider.usage.list.response");
+    expect(response?.payload.providers[1]).toMatchObject({
+      providerId: "cx",
+      displayName: "Claude CX",
+      status: "error",
+      sourceLabel: "Codex quota",
+      windows: [],
+      error: "Codex quota failed",
+    });
+  });
+
+  it("rejects unsupported quota provider aliases", async () => {
+    const { subsystem, emitted } = makeSubsystem({
+      snapshot: {
+        listRegisteredProviderIds: () => ["cx"],
+        getProviderParams: () => ({ usage: { quotaProvider: "codex-alias" } }),
+        getProviderLabel: () => "Claude CX",
+      },
+      usage: {
+        listUsage: async () => ({
+          fetchedAt: "2026-08-07T00:00:00.000Z",
+          providers: [makeCodexUsage()],
+        }),
+      },
+    });
+
+    await subsystem.handleProviderUsageListRequest({
+      type: "provider.usage.list.request",
+      requestId: "u-no-alias",
+    });
+
+    expect(findByType(emitted, "provider.usage.list.response")).toBeUndefined();
+    expect(findByType(emitted, "rpc_error")?.payload).toMatchObject({
+      requestId: "u-no-alias",
+      requestType: "provider.usage.list.request",
+      code: "provider_usage_list_failed",
+    });
+  });
+
+  it("reads quota projection params again after config reload", async () => {
+    let providerParams: unknown;
+    const { subsystem, emitted } = makeSubsystem({
+      snapshot: {
+        listRegisteredProviderIds: () => ["cx"],
+        getProviderParams: () => providerParams,
+        getProviderLabel: () => "Claude CX",
+      },
+      usage: {
+        listUsage: async () => ({
+          fetchedAt: "2026-08-07T00:00:00.000Z",
+          providers: [makeCodexUsage()],
+        }),
+      },
+    });
+
+    await subsystem.handleProviderUsageListRequest({
+      type: "provider.usage.list.request",
+      requestId: "u-before-reload",
+    });
+    providerParams = { usage: { quotaProvider: "codex" } };
+    await subsystem.handleProviderUsageListRequest({
+      type: "provider.usage.list.request",
+      requestId: "u-after-reload",
+    });
+
+    const responses = emitted.filter(
+      (
+        message,
+      ): message is Extract<SessionOutboundMessage, { type: "provider.usage.list.response" }> =>
+        message.type === "provider.usage.list.response",
+    );
+    expect(responses[0]?.payload.providers.map((provider) => provider.providerId)).toEqual([
+      "codex",
+    ]);
+    expect(responses[1]?.payload.providers.map((provider) => provider.providerId)).toEqual([
+      "codex",
+      "cx",
+    ]);
   });
 
   it("surfaces a feature-list failure inline, not as an rpc_error", async () => {
