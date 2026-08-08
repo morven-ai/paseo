@@ -9,7 +9,7 @@ import {
   type DaemonSessionHost,
 } from "./daemon-session.js";
 import type { DaemonWebSocketRuntimeDiagnosticSnapshot } from "./diagnostics.js";
-import type { ProviderAvailability } from "../../agent/agent-manager.js";
+import { AgentManager, type ProviderAvailability } from "../../agent/agent-manager.js";
 import type { HubRelationshipManagement } from "../../hub/relationship-controller.js";
 import type { SessionOutboundMessage } from "../../messages.js";
 
@@ -38,9 +38,11 @@ function restoreEnv(name: string, value: string | undefined): void {
 function makeSubsystem(overrides: {
   serverId?: string;
   daemonVersion?: string;
+  runtimeBuildId?: string;
   daemonRuntimeConfig?: DaemonRuntimeConfig;
   listProviderAvailability?: () => Promise<ProviderAvailability[]>;
   getWebSocketRuntimeMetrics?: () => DaemonWebSocketRuntimeDiagnosticSnapshot | null;
+  agentManager?: AgentManager;
   hubRelationships?: HubRelationshipManagement;
 }) {
   const emitted: SessionOutboundMessage[] = [];
@@ -56,7 +58,9 @@ function makeSubsystem(overrides: {
     paseoHome,
     serverId: overrides.serverId,
     daemonVersion: overrides.daemonVersion,
+    runtimeBuildId: overrides.runtimeBuildId,
     daemonRuntimeConfig: overrides.daemonRuntimeConfig,
+    agentManager: overrides.agentManager,
     listAgents: () => [],
     listProjects: async () => [],
     listWorkspaces: async () => [],
@@ -155,6 +159,61 @@ describe("DaemonSession", () => {
         },
       },
     ]);
+  });
+
+  test("status includes runtime build ID when provided", async () => {
+    const previous = process.env.PASEO_RUNTIME_BUILD_ID;
+    process.env.PASEO_RUNTIME_BUILD_ID = "build-test-1";
+    try {
+      const { subsystem, emitted } = makeSubsystem({
+        serverId: "srv-1",
+        daemonVersion: "1.2.3",
+        runtimeBuildId: process.env.PASEO_RUNTIME_BUILD_ID,
+        daemonRuntimeConfig: { listen: "127.0.0.1:6767", relay: null },
+      });
+
+      await subsystem.handleGetStatusRequest({
+        type: "daemon.get_status.request",
+        requestId: "s-build",
+      });
+
+      expect(emitted[0]).toMatchObject({
+        type: "daemon.get_status.response",
+        payload: { requestId: "s-build", runtimeBuildId: "build-test-1" },
+      });
+    } finally {
+      if (previous === undefined) delete process.env.PASEO_RUNTIME_BUILD_ID;
+      else process.env.PASEO_RUNTIME_BUILD_ID = previous;
+    }
+  });
+
+  test("maintenance RPC keeps operation ownership across request connections", async () => {
+    const agentManager = new AgentManager({
+      clients: {},
+      logger: pino({ level: "silent" }),
+      providerDefinitions: {},
+    });
+    const first = makeSubsystem({ agentManager });
+    await first.subsystem.handleMaintenanceRequest({
+      type: "daemon.maintenance.acquire.request",
+      requestId: "acquire-1",
+      operationId: "operation-1",
+    });
+    expect(first.emitted[0]).toMatchObject({
+      type: "daemon.maintenance.acquire.response",
+      payload: { acquired: true, owner: "operation-1", operationId: "operation-1" },
+    });
+
+    const second = makeSubsystem({ agentManager });
+    await second.subsystem.handleMaintenanceRequest({
+      type: "daemon.maintenance.release.request",
+      requestId: "release-1",
+      operationId: "operation-1",
+    });
+    expect(second.emitted[0]).toMatchObject({
+      type: "daemon.maintenance.release.response",
+      payload: { acquired: false, owner: null },
+    });
   });
 
   test("status falls back to null fields and an empty provider list when listing rejects", async () => {

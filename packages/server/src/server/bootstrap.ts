@@ -839,6 +839,7 @@ export async function createPaseoDaemon(
       workspaceGitService.onWorkspaceStateMayHaveChanged(cwd);
     },
     mcpAuthToken: agentMcpAuthToken,
+    initialMaintenanceOperationId: process.env.PASEO_MAINTENANCE_OPERATION_ID,
     logger,
   });
 

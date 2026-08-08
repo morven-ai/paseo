@@ -96,6 +96,7 @@ function createFinishNotificationScenario(
     return options?.childLastAssistantMessage ?? null;
   });
   Reflect.set(agentManager, "tryRunOutOfBand", () => false);
+  Reflect.set(agentManager, "reserveProviderWorkAdmission", () => () => {});
   Reflect.set(agentManager, "hasInFlightRun", () => Boolean(options?.parentPromptError));
   Reflect.set(agentManager, "streamAgent", (_agentId: string, prompt: string) => {
     parentPrompted = true;
@@ -258,6 +259,11 @@ test("sendPromptToAgent forwards the client message id as run options", async ()
     vi.fn(() => agent),
   );
   Reflect.set(agentManager, "tryRunOutOfBand", vi.fn().mockReturnValue(false));
+  Reflect.set(
+    agentManager,
+    "reserveProviderWorkAdmission",
+    vi.fn(() => () => {}),
+  );
   Reflect.set(agentManager, "hasInFlightRun", vi.fn().mockReturnValue(false));
   Reflect.set(agentManager, "streamAgent", streamAgentSpy);
 
@@ -282,6 +288,30 @@ test("sendPromptToAgent forwards the client message id as run options", async ()
     outputSchema: { type: "object" },
     clientMessageId: "msg-client-1",
   });
+});
+
+test("sendPromptToAgent is rejected before archived storage can be mutated during maintenance", async () => {
+  const agentManager = new AgentManager({
+    clients: {},
+    logger: createTestLogger(),
+    providerDefinitions: {},
+  });
+  expect(agentManager.acquireMaintenance("operation-1")).toMatchObject({ acquired: true });
+
+  const agentStorage: AgentStorage = Object.create(AgentStorage.prototype);
+  const get = vi.fn(async () => ({ archivedAt: new Date().toISOString() }));
+  Reflect.set(agentStorage, "get", get);
+
+  await expect(
+    sendPromptToAgent({
+      agentManager,
+      agentStorage,
+      agentId: "agent-1",
+      prompt: "hello",
+      logger: createTestLogger(),
+    }),
+  ).rejects.toThrow("Provider work is blocked by daemon maintenance");
+  expect(get).not.toHaveBeenCalled();
 });
 
 test("finish notifications tell the parent the child's last assistant message", async () => {

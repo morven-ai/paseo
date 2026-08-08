@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { z } from "zod";
 import {
   FileExplorerRequestSchema,
   PaseoWorktreeArchiveRequestSchema,
@@ -428,6 +429,65 @@ describe("paseo worktree archive request compatibility", () => {
     });
     expect(parsed).not.toHaveProperty("extraField");
     expect(parsed.scope).toBe("workspace");
+  });
+});
+
+describe("daemon maintenance messages", () => {
+  test("accepts acquire, release, status RPCs and optional runtime build ID", () => {
+    const acquire = SessionInboundMessageSchema.parse({
+      type: "daemon.maintenance.acquire.request",
+      requestId: "maintenance-1",
+      operationId: "operation-1",
+    });
+    const response = SessionOutboundMessageSchema.parse({
+      type: "daemon.maintenance.acquire.response",
+      payload: {
+        requestId: "maintenance-1",
+        acquired: true,
+        owner: "operation-1",
+        operationId: "operation-1",
+        blockers: [],
+      },
+    });
+    const oldServerInfo = parseServerInfoStatusPayload({
+      status: "server_info",
+      serverId: "server-1",
+      version: "0.2.5",
+      features: { daemonStatusRpc: true },
+    });
+    const newServerInfo = parseServerInfoStatusPayload({
+      status: "server_info",
+      serverId: "server-1",
+      version: "0.2.6",
+      runtimeBuildId: "build-1",
+      features: { daemonStatusRpc: true, daemonMaintenance: true },
+    });
+
+    const legacyServerInfoSchema = z.object({
+      status: z.literal("server_info"),
+      serverId: z.string(),
+      version: z.string().optional(),
+      features: z.object({ daemonStatusRpc: z.boolean().optional() }),
+    });
+
+    expect(acquire.type).toBe("daemon.maintenance.acquire.request");
+    expect(response.type).toBe("daemon.maintenance.acquire.response");
+    expect(oldServerInfo.runtimeBuildId).toBeUndefined();
+    expect(newServerInfo.runtimeBuildId).toBe("build-1");
+    expect(
+      legacyServerInfoSchema.parse({
+        status: "server_info",
+        serverId: "server-1",
+        version: "0.2.6",
+        runtimeBuildId: "build-1",
+        features: { daemonStatusRpc: true, daemonMaintenance: true },
+      }),
+    ).toEqual({
+      status: "server_info",
+      serverId: "server-1",
+      version: "0.2.6",
+      features: { daemonStatusRpc: true },
+    });
   });
 });
 

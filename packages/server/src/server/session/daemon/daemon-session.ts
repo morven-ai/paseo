@@ -1,5 +1,9 @@
 import type pino from "pino";
-import type { ProviderAvailability } from "../../agent/agent-manager.js";
+import type {
+  AgentManager,
+  MaintenanceSnapshot,
+  ProviderAvailability,
+} from "../../agent/agent-manager.js";
 import type { SessionInboundMessage, SessionOutboundMessage } from "../../messages.js";
 import { getPidLockInfo } from "../../pid-lock.js";
 import { generateLocalPairingOffer } from "../../pairing-offer.js";
@@ -42,7 +46,9 @@ export interface DaemonSessionOptions {
   paseoHome: string;
   serverId: string | undefined;
   daemonVersion: string | undefined;
+  runtimeBuildId?: string;
   daemonRuntimeConfig: DaemonRuntimeConfig | undefined;
+  agentManager?: AgentManager;
   listAgents: () => ManagedAgent[];
   listProjects: () => Promise<PersistedProjectRecord[]>;
   listWorkspaces: () => Promise<PersistedWorkspaceRecord[]>;
@@ -65,7 +71,9 @@ export class DaemonSession {
   private readonly paseoHome: string;
   private readonly serverId: string | undefined;
   private readonly daemonVersion: string | undefined;
+  private readonly runtimeBuildId: string | undefined;
   private readonly daemonRuntimeConfig: DaemonRuntimeConfig | undefined;
+  private readonly agentManager: AgentManager | null;
   private readonly listAgents: () => ManagedAgent[];
   private readonly listProjects: () => Promise<PersistedProjectRecord[]>;
   private readonly listWorkspaces: () => Promise<PersistedWorkspaceRecord[]>;
@@ -81,7 +89,9 @@ export class DaemonSession {
     this.paseoHome = options.paseoHome;
     this.serverId = options.serverId;
     this.daemonVersion = options.daemonVersion;
+    this.runtimeBuildId = options.runtimeBuildId;
     this.daemonRuntimeConfig = options.daemonRuntimeConfig;
+    this.agentManager = options.agentManager ?? null;
     this.listAgents = options.listAgents;
     this.listProjects = options.listProjects;
     this.listWorkspaces = options.listWorkspaces;
@@ -149,6 +159,58 @@ export class DaemonSession {
     }
   }
 
+  private emitMaintenanceResponse(
+    type:
+      | "daemon.maintenance.acquire.response"
+      | "daemon.maintenance.release.response"
+      | "daemon.maintenance.status.response",
+    requestId: string,
+    snapshot: MaintenanceSnapshot,
+  ): void {
+    this.host.emit({
+      type,
+      payload: {
+        requestId,
+        acquired: snapshot.acquired,
+        owner: snapshot.owner,
+        operationId: snapshot.operationId,
+        blockers: snapshot.blockers,
+      },
+    });
+  }
+
+  async handleMaintenanceRequest(
+    msg: Extract<
+      SessionInboundMessage,
+      {
+        type:
+          | "daemon.maintenance.acquire.request"
+          | "daemon.maintenance.release.request"
+          | "daemon.maintenance.status.request";
+      }
+    >,
+  ): Promise<void> {
+    if (!this.agentManager) {
+      throw new Error("Daemon maintenance is unavailable");
+    }
+    let snapshot: MaintenanceSnapshot;
+    if (msg.type === "daemon.maintenance.acquire.request") {
+      snapshot = this.agentManager.acquireMaintenance(msg.operationId);
+    } else if (msg.type === "daemon.maintenance.release.request") {
+      snapshot = this.agentManager.releaseMaintenance(msg.operationId);
+    } else {
+      snapshot = this.agentManager.getMaintenanceStatus();
+    }
+    this.emitMaintenanceResponse(
+      msg.type.replace(".request", ".response") as
+        | "daemon.maintenance.acquire.response"
+        | "daemon.maintenance.release.response"
+        | "daemon.maintenance.status.response",
+      msg.requestId,
+      snapshot,
+    );
+  }
+
   async handleGetStatusRequest(
     msg: Extract<SessionInboundMessage, { type: "daemon.get_status.request" }>,
   ): Promise<void> {
@@ -165,6 +227,7 @@ export class DaemonSession {
           requestId: msg.requestId,
           serverId: this.serverId ?? "",
           version: this.daemonVersion ?? null,
+          ...(this.runtimeBuildId ? { runtimeBuildId: this.runtimeBuildId } : {}),
           pid: process.pid,
           nodePath: process.execPath,
           startedAt: pidInfo?.startedAt ?? null,
@@ -181,6 +244,7 @@ export class DaemonSession {
           requestId: msg.requestId,
           serverId: this.serverId ?? "",
           version: this.daemonVersion ?? null,
+          ...(this.runtimeBuildId ? { runtimeBuildId: this.runtimeBuildId } : {}),
           pid: process.pid,
           nodePath: process.execPath,
           startedAt: null,

@@ -83,6 +83,9 @@ import type {
   ProviderDiagnosticResponseMessage,
   ProviderUsageListResponseMessage,
   DaemonGetStatusResponse,
+  DaemonMaintenanceAcquireResponse,
+  DaemonMaintenanceReleaseResponse,
+  DaemonMaintenanceStatusResponse,
   DaemonGetPairingOfferResponse,
   DiagnosticsResponse,
   AgentRewindResponseMessage,
@@ -4543,6 +4546,41 @@ export class DaemonClient {
     });
   }
 
+  async acquireDaemonMaintenance(
+    operationId: string,
+    requestId?: string,
+  ): Promise<DaemonMaintenanceAcquireResponse["payload"]> {
+    this.requireDaemonMaintenanceSupport();
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "daemon.maintenance.acquire.request", operationId },
+      responseType: "daemon.maintenance.acquire.response",
+    });
+  }
+
+  async releaseDaemonMaintenance(
+    operationId: string,
+    requestId?: string,
+  ): Promise<DaemonMaintenanceReleaseResponse["payload"]> {
+    this.requireDaemonMaintenanceSupport();
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "daemon.maintenance.release.request", operationId },
+      responseType: "daemon.maintenance.release.response",
+    });
+  }
+
+  async getDaemonMaintenanceStatus(
+    requestId?: string,
+  ): Promise<DaemonMaintenanceStatusResponse["payload"]> {
+    this.requireDaemonMaintenanceSupport();
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "daemon.maintenance.status.request" },
+      responseType: "daemon.maintenance.status.response",
+    });
+  }
+
   async connectHub(hubUrl: string, token: string, requestId?: string) {
     this.requireHubRelationshipSupport();
     return this.sendCorrelatedSessionRequest({
@@ -5226,6 +5264,13 @@ export class DaemonClient {
 
   getLastServerInfoMessage(): ServerInfoStatusPayload | null {
     return this.lastServerInfoMessage;
+  }
+
+  private requireDaemonMaintenanceSupport(): void {
+    // COMPAT(daemonMaintenance): added in v0.2.6, remove after 2027-02-08.
+    if (this.lastServerInfoMessage?.features?.daemonMaintenance !== true) {
+      throw new Error("Update the host to use daemon maintenance.");
+    }
   }
 
   private requireHubRelationshipSupport(): void {

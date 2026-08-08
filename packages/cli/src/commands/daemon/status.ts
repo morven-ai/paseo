@@ -31,6 +31,7 @@ interface DaemonStatus {
   cliNode: string;
   cliVersion: string;
   daemonVersion: string | null;
+  runtimeBuildId: string | null;
   desktopManaged: boolean;
   providers: ProviderBinaryStatus[];
   note?: string;
@@ -129,6 +130,7 @@ function toStatusRows(status: DaemonStatus): StatusRow[] {
     { key: "CLI Node", value: status.cliNode },
     { key: "CLI", value: status.cliVersion },
     { key: "Daemon Version", value: status.daemonVersion ?? "-" },
+    { key: "Runtime Build ID", value: status.runtimeBuildId ?? "-" },
   ];
 
   if (status.note) {
@@ -202,6 +204,7 @@ interface DaemonProbeResult {
   connectedDaemon: DaemonStatus["connectedDaemon"];
   localDaemonOverride?: DaemonStatus["localDaemon"];
   daemonVersion?: string | null;
+  runtimeBuildId?: string | null;
   daemonNodeOverride?: string;
   daemonProviders?: ProviderBinaryStatus[];
   relayStatus?: string;
@@ -275,6 +278,7 @@ async function probeDaemonOverWebsocket(args: {
       return {
         connectedDaemon: "reachable",
         daemonVersion: statusPayload.version ?? daemonVersion,
+        runtimeBuildId: statusPayload.runtimeBuildId ?? null,
         daemonNodeOverride: statusPayload.nodePath,
         daemonProviders,
         relayStatus,
@@ -287,6 +291,7 @@ async function probeDaemonOverWebsocket(args: {
     return {
       connectedDaemon: "reachable",
       daemonVersion: statusPayload.version ?? daemonVersion,
+      runtimeBuildId: statusPayload.runtimeBuildId ?? null,
       daemonNodeOverride: statusPayload.nodePath,
       daemonProviders,
       relayStatus,
@@ -310,6 +315,7 @@ interface ProbeMergeState {
   localDaemon: DaemonStatus["localDaemon"];
   daemonNode: string;
   daemonVersion: string | null;
+  runtimeBuildId: string | null;
   daemonProviders: ProviderBinaryStatus[] | undefined;
   relayStatus: string;
   note: string | undefined;
@@ -322,6 +328,8 @@ function applyProbeToStatus(input: ProbeMergeState): Omit<ProbeMergeState, "prob
     localDaemon: probe.localDaemonOverride ?? input.localDaemon,
     daemonNode: probe.daemonNodeOverride ?? input.daemonNode,
     daemonVersion: probe.daemonVersion !== undefined ? probe.daemonVersion : input.daemonVersion,
+    runtimeBuildId:
+      probe.runtimeBuildId !== undefined ? probe.runtimeBuildId : input.runtimeBuildId,
     daemonProviders: probe.daemonProviders ?? input.daemonProviders,
     relayStatus: probe.relayStatus ?? input.relayStatus,
     note: probe.note ? appendNote(input.note, probe.note) : input.note,
@@ -394,6 +402,7 @@ export async function runStatusCommand(
   let localDaemon: DaemonStatus["localDaemon"] = state.running ? "running" : "stopped";
   let connectedDaemon: DaemonStatus["connectedDaemon"] = "not_probed";
   let daemonVersion: string | null = null;
+  let runtimeBuildId: string | null = null;
   let daemonProviders: ProviderBinaryStatus[] | undefined;
   let relayStatus = selectRelayStatus({ persisted: relayConfigFromLocalState(state) });
   let note: string | undefined;
@@ -412,6 +421,9 @@ export async function runStatusCommand(
       daemonVersion,
       daemonProviders,
       relayStatus,
+      runtimeBuildId,
+      daemonProviders,
+      runtimeBuildId,
       note,
     } = applyProbeToStatus({
       probe,
@@ -451,6 +463,7 @@ export async function runStatusCommand(
     cliNode,
     cliVersion,
     daemonVersion,
+    runtimeBuildId,
     desktopManaged: state.pidInfo?.desktopManaged === true,
     providers,
     note,

@@ -19,15 +19,25 @@ class FakePermissionAgentManager {
     requestId: string;
     response: AgentPermissionResponse;
   }> = [];
+  admissionReservations = 0;
+  admissionCountDuringPermission = 0;
   streamRuns: Array<{ agentId: string; prompt: AgentPromptInput; options?: AgentRunOptions }> = [];
   replacementRuns: Array<{ agentId: string; prompt: AgentPromptInput; options?: AgentRunOptions }> =
     [];
+
+  reserveProviderWorkAdmission(): () => void {
+    this.admissionReservations += 1;
+    return () => {
+      this.admissionReservations -= 1;
+    };
+  }
 
   async respondToPermission(
     agentId: string,
     requestId: string,
     response: AgentPermissionResponse,
   ): Promise<AgentPermissionResult | void> {
+    this.admissionCountDuringPermission = this.admissionReservations;
     this.permissionResponses.push({ agentId, requestId, response });
     return this.permissionResult;
   }
@@ -94,6 +104,8 @@ describe("respondToAgentPermission", () => {
       },
     ]);
     expect(agentManager.replacementRuns).toEqual([]);
+    expect(agentManager.admissionCountDuringPermission).toBe(1);
+    expect(agentManager.admissionReservations).toBe(0);
   });
 
   test("does not start a run when the permission response has no follow-up prompt", async () => {

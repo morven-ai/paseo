@@ -181,34 +181,39 @@ export async function waitForAgentRunStartWithTimeout(
 export async function sendPromptToAgent(
   params: SendPromptToAgentParams,
 ): Promise<{ outOfBand: boolean }> {
-  const unarchive = params.unarchive ?? true;
+  const releaseAdmission = params.agentManager.reserveProviderWorkAdmission();
+  try {
+    const unarchive = params.unarchive ?? true;
 
-  const record = await params.agentStorage.get(params.agentId);
-  if (record?.archivedAt) {
-    if (!unarchive) {
-      return { outOfBand: false };
+    const record = await params.agentStorage.get(params.agentId);
+    if (record?.archivedAt) {
+      if (!unarchive) {
+        return { outOfBand: false };
+      }
+      await unarchiveAgentState(params.agentStorage, params.agentManager, params.agentId);
     }
-    await unarchiveAgentState(params.agentStorage, params.agentManager, params.agentId);
+
+    await ensureAgentLoaded(params.agentId, {
+      agentManager: params.agentManager,
+      agentStorage: params.agentStorage,
+      logger: params.logger,
+    });
+
+    if (params.sessionMode) {
+      await params.agentManager.setAgentMode(params.agentId, params.sessionMode);
+    }
+
+    const runOptions = params.messageId
+      ? { ...params.runOptions, clientMessageId: params.messageId }
+      : params.runOptions;
+
+    return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
+      replaceRunning: true,
+      runOptions,
+    });
+  } finally {
+    releaseAdmission();
   }
-
-  await ensureAgentLoaded(params.agentId, {
-    agentManager: params.agentManager,
-    agentStorage: params.agentStorage,
-    logger: params.logger,
-  });
-
-  if (params.sessionMode) {
-    await params.agentManager.setAgentMode(params.agentId, params.sessionMode);
-  }
-
-  const runOptions = params.messageId
-    ? { ...params.runOptions, clientMessageId: params.messageId }
-    : params.runOptions;
-
-  return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
-    replaceRunning: true,
-    runOptions,
-  });
 }
 
 export async function startCreatedAgentInitialPrompt(

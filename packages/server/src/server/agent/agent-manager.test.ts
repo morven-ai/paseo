@@ -6625,6 +6625,113 @@ test("unarchiveSnapshot unarchives native provider storage before clearing archi
   expect(stored?.labels).toEqual({ retained: "yes", source: "reimport" });
 });
 
+test("initial maintenance operation blocks provider work from daemon bootstrap", () => {
+  const manager = new AgentManager({
+    clients: {},
+    initialMaintenanceOperationId: "operation-bootstrap",
+    logger,
+    providerDefinitions: {},
+  });
+
+  expect(manager.getMaintenanceStatus()).toMatchObject({
+    acquired: true,
+    owner: "operation-bootstrap",
+  });
+  expect(() => manager.reserveProviderWorkAdmission()).toThrow(
+    "Provider work is blocked by daemon maintenance",
+  );
+  expect(manager.releaseMaintenance("operation-bootstrap")).toMatchObject({ acquired: false });
+});
+
+test("maintenance acquire is operation-bound and idempotent across client reconnects", () => {
+  const manager = new AgentManager({
+    clients: {},
+    logger,
+    providerDefinitions: {},
+  });
+
+  const acquired = manager.acquireMaintenance("operation-1");
+  expect(acquired).toMatchObject({
+    acquired: true,
+    owner: "operation-1",
+    operationId: "operation-1",
+  });
+  expect(manager.acquireMaintenance("operation-1")).toMatchObject({ acquired: true });
+  expect(manager.acquireMaintenance("operation-2")).toMatchObject({
+    acquired: false,
+    owner: "operation-1",
+  });
+  expect(manager.releaseMaintenance("operation-2")).toMatchObject({
+    acquired: false,
+    owner: "operation-1",
+  });
+  expect(manager.releaseMaintenance("operation-1")).toMatchObject({
+    acquired: false,
+    owner: null,
+  });
+});
+
+test("maintenance acquire fails closed while admission is reserved and blocks new work when held", () => {
+  const manager = new AgentManager({
+    clients: {},
+    logger,
+    providerDefinitions: {},
+  });
+
+  const releaseAdmission = manager.reserveProviderWorkAdmission();
+  expect(manager.acquireMaintenance("operation-1")).toMatchObject({
+    acquired: false,
+    blockers: [{ kind: "admission_reservation", count: 1 }],
+  });
+  releaseAdmission();
+
+  expect(manager.acquireMaintenance("operation-1")).toMatchObject({ acquired: true });
+  expect(() => manager.reserveProviderWorkAdmission()).toThrow(
+    "Provider work is blocked by daemon maintenance",
+  );
+  expect(manager.releaseMaintenance("operation-1")).toMatchObject({ acquired: false });
+  const releaseAfterMaintenance = manager.reserveProviderWorkAdmission();
+  releaseAfterMaintenance();
+});
+
+test("failed permission and rewind admissions do not leak reservations", async () => {
+  const manager = new AgentManager({
+    clients: {},
+    logger,
+    providerDefinitions: {},
+  });
+
+  const missingAgentId = "00000000-0000-4000-8000-000000000999";
+  await expect(
+    manager.respondToPermission(missingAgentId, "permission-1", { behavior: "deny" }),
+  ).rejects.toThrow(`Unknown agent '${missingAgentId}'`);
+  expect(manager.acquireMaintenance("operation-after-permission")).toMatchObject({
+    acquired: true,
+  });
+  manager.releaseMaintenance("operation-after-permission");
+
+  await expect(manager.rewind(missingAgentId, "message-1", "conversation")).rejects.toThrow(
+    `Unknown agent '${missingAgentId}'`,
+  );
+  expect(manager.acquireMaintenance("operation-after-rewind")).toMatchObject({ acquired: true });
+});
+
+test("maintenance blocks direct stored archive and unarchive before mutation", async () => {
+  const manager = new AgentManager({
+    clients: {},
+    logger,
+    providerDefinitions: {},
+  });
+  expect(manager.acquireMaintenance("operation-archive")).toMatchObject({ acquired: true });
+
+  await expect(manager.archiveSnapshot("agent-1", new Date().toISOString())).rejects.toThrow(
+    "Provider work is blocked by daemon maintenance",
+  );
+  await expect(manager.unarchiveSnapshot("agent-1")).rejects.toThrow(
+    "Provider work is blocked by daemon maintenance",
+  );
+});
+
 test("unarchiveSnapshotByHandle unarchives native provider storage for the matched snapshot", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-native-unarchive-handle-"));
   const storagePath = join(workdir, "agents");
@@ -7533,6 +7640,13 @@ test("respondToPermission updates currentModeId after plan approval", async () =
     input: { plan: "Test plan" },
   };
   agent.pendingPermissions.set(permissionRequest.id, permissionRequest);
+
+  expect(manager.acquireMaintenance("operation-plan")).toMatchObject({
+    acquired: false,
+    owner: null,
+    blockers: [{ kind: "pending_permission", count: 1 }],
+  });
+  expect(manager.getMaintenanceStatus()).toMatchObject({ acquired: false, owner: null });
 
   // Approve the plan permission
   await manager.respondToPermission(snapshot.id, "perm-123", {

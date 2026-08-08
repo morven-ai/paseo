@@ -5,6 +5,7 @@ import { runStopCommand } from "./stop.js";
 import { runRestartCommand } from "./restart.js";
 import { runSetPasswordCommand } from "./set-password.js";
 import { pairCommand } from "./pair.js";
+import { maintenanceCommand } from "./maintenance.js";
 import { withOutput } from "../../output/index.js";
 import { addJsonOption } from "../../utils/command-options.js";
 
@@ -19,6 +20,7 @@ export function createDaemonCommand(): Command {
 
   daemon.addCommand(startCommand());
   daemon.addCommand(pairCommand());
+  daemon.addCommand(maintenanceCommand());
 
   addJsonOption(daemon.command("status").description("Show local daemon status"))
     .option("--home <path>", "Paseo home directory (default: ~/.paseo)")

@@ -882,7 +882,9 @@ export class Session {
       paseoHome: this.paseoHome,
       serverId,
       daemonVersion,
+      runtimeBuildId: process.env.PASEO_RUNTIME_BUILD_ID,
       daemonRuntimeConfig,
+      agentManager,
       getWebSocketRuntimeMetrics,
       listProviderAvailability: () => this.agentManager.listProviderAvailability(),
       listAgents: () => this.agentManager.listAgents(),
@@ -2020,6 +2022,10 @@ export class Session {
         return undefined;
       case "daemon.get_status.request":
         return this.daemonSession.handleGetStatusRequest(msg);
+      case "daemon.maintenance.acquire.request":
+      case "daemon.maintenance.release.request":
+      case "daemon.maintenance.status.request":
+        return this.daemonSession.handleMaintenanceRequest(msg);
       case "daemon.get_pairing_offer.request":
         return this.daemonSession.handleGetPairingOfferRequest(msg);
       case "hub.management.daemon.connect.request":

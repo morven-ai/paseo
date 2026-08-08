@@ -1239,6 +1239,23 @@ export const DaemonGetStatusRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const DaemonMaintenanceAcquireRequestSchema = z.object({
+  type: z.literal("daemon.maintenance.acquire.request"),
+  requestId: z.string(),
+  operationId: z.string(),
+});
+
+export const DaemonMaintenanceReleaseRequestSchema = z.object({
+  type: z.literal("daemon.maintenance.release.request"),
+  requestId: z.string(),
+  operationId: z.string(),
+});
+
+export const DaemonMaintenanceStatusRequestSchema = z.object({
+  type: z.literal("daemon.maintenance.status.request"),
+  requestId: z.string(),
+});
+
 export const DaemonGetPairingOfferRequestSchema = z.object({
   type: z.literal("daemon.get_pairing_offer.request"),
   requestId: z.string(),
@@ -2729,6 +2746,9 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   SendAgentMessageRequestSchema,
   WaitForFinishRequestSchema,
   DaemonGetStatusRequestSchema,
+  DaemonMaintenanceAcquireRequestSchema,
+  DaemonMaintenanceReleaseRequestSchema,
+  DaemonMaintenanceStatusRequestSchema,
   DaemonGetPairingOfferRequestSchema,
   HubManagementDaemonConnectRequestSchema,
   HubManagementDaemonGetStatusRequestSchema,
@@ -3029,6 +3049,7 @@ export const ServerInfoStatusPayloadSchema = z
     serverId: z.string().trim().min(1),
     hostname: ServerInfoHostnameSchema.optional(),
     version: ServerInfoVersionSchema.optional(),
+    runtimeBuildId: ServerInfoVersionSchema.optional(),
     // COMPAT(desktopManaged): added in v0.1.X, remove optional parsing after 2027-01-16.
     desktopManaged: z.boolean().optional(),
     capabilities: ServerCapabilitiesFromUnknownSchema.optional(),
@@ -3054,6 +3075,8 @@ export const ServerInfoStatusPayloadSchema = z
         relayConfig: z.boolean().optional(),
         // COMPAT(pushTokenRevocation): added in v0.3.2, remove gate after 2027-02-10.
         pushTokenRevocation: z.boolean().optional(),
+        // COMPAT(daemonMaintenance): added in v0.2.6, remove gate after 2027-02-08.
+        daemonMaintenance: z.boolean().optional(),
         // COMPAT(terminalRestoreModes): added in v0.1.81, remove gate after 2026-11-23.
         "terminal-restore-modes": z.boolean().optional(),
         // COMPAT(terminalInputModeReplay): added in v0.2.6, remove gate after 2027-02-02.
@@ -4112,6 +4135,35 @@ export const GetDaemonConfigResponseMessageSchema = z.object({
     .passthrough(),
 });
 
+const MaintenanceBlockerSchema = z.object({
+  kind: z.string(),
+  count: z.number().int().nonnegative(),
+  detail: z.string().optional(),
+});
+
+const MaintenancePayloadSchema = z.object({
+  requestId: z.string(),
+  acquired: z.boolean(),
+  owner: z.string().nullable(),
+  operationId: z.string().nullable().optional(),
+  blockers: z.array(MaintenanceBlockerSchema),
+});
+
+export const DaemonMaintenanceAcquireResponseSchema = z.object({
+  type: z.literal("daemon.maintenance.acquire.response"),
+  payload: MaintenancePayloadSchema,
+});
+
+export const DaemonMaintenanceReleaseResponseSchema = z.object({
+  type: z.literal("daemon.maintenance.release.response"),
+  payload: MaintenancePayloadSchema,
+});
+
+export const DaemonMaintenanceStatusResponseSchema = z.object({
+  type: z.literal("daemon.maintenance.status.response"),
+  payload: MaintenancePayloadSchema,
+});
+
 export const DaemonGetStatusResponseSchema = z.object({
   type: z.literal("daemon.get_status.response"),
   payload: z
@@ -4119,6 +4171,7 @@ export const DaemonGetStatusResponseSchema = z.object({
       requestId: z.string(),
       serverId: z.string(),
       version: z.string().nullable().optional(),
+      runtimeBuildId: z.string().nullable().optional(),
       pid: z.number(),
       nodePath: z.string(),
       startedAt: z.string().nullable().optional(),
@@ -5711,6 +5764,9 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   SendAgentMessageResponseMessageSchema,
   SetVoiceModeResponseMessageSchema,
   DaemonGetStatusResponseSchema,
+  DaemonMaintenanceAcquireResponseSchema,
+  DaemonMaintenanceReleaseResponseSchema,
+  DaemonMaintenanceStatusResponseSchema,
   DaemonGetPairingOfferResponseSchema,
   HubManagementDaemonConnectResponseSchema,
   HubManagementDaemonGetStatusResponseSchema,
@@ -5958,6 +6014,13 @@ export type ListProviderFeaturesResponseMessage = z.infer<
 >;
 export type ListAvailableProvidersResponse = z.infer<typeof ListAvailableProvidersResponseSchema>;
 export type DaemonGetStatusResponse = z.infer<typeof DaemonGetStatusResponseSchema>;
+export type DaemonMaintenanceAcquireResponse = z.infer<
+  typeof DaemonMaintenanceAcquireResponseSchema
+>;
+export type DaemonMaintenanceReleaseResponse = z.infer<
+  typeof DaemonMaintenanceReleaseResponseSchema
+>;
+export type DaemonMaintenanceStatusResponse = z.infer<typeof DaemonMaintenanceStatusResponseSchema>;
 export type DaemonGetPairingOfferResponse = z.infer<typeof DaemonGetPairingOfferResponseSchema>;
 export type DiagnosticsResponse = z.infer<typeof DiagnosticsResponseSchema>;
 export type GetProvidersSnapshotResponseMessage = z.infer<
