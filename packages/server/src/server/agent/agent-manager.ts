@@ -1658,25 +1658,23 @@ export class AgentManager {
     if (!this.registry) {
       throw new Error("Agent storage is not configured");
     }
-      await this.registry.applySnapshot(agent, {
-        internal: agent.internal,
-      });
-      const stored = await this.registry.get(agentId);
-      if (!stored) {
-        throw new Error(`Agent ${agentId} not found in storage after snapshot`);
-      }
 
-      const { archivedAt } = await this.markRecordArchived(stored);
-      agent.updatedAt = new Date(archivedAt);
-      await this.closeAgent(agentId);
-      this.discardRetainedAgentState(agentId);
-
-      await this.cascadeArchiveChildren(agentId);
-
-      return { archivedAt };
-    } finally {
-      releaseAdmission();
+    await this.registry.applySnapshot(agent, {
+      internal: agent.internal,
+    });
+    const stored = await this.registry.get(agentId);
+    if (!stored) {
+      throw new Error(`Agent ${agentId} not found in storage after snapshot`);
     }
+
+    const { archivedAt } = await this.markRecordArchived(stored);
+    agent.updatedAt = new Date(archivedAt);
+    await this.closeAgent(agentId);
+    this.discardRetainedAgentState(agentId);
+
+    await this.cascadeArchiveChildren(agentId);
+
+    return { archivedAt };
   }
 
   // Children created via the MCP `create_agent` tool carry the parent-agent-id
